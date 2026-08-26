@@ -18,6 +18,10 @@ import {
   preparationUsage,
 } from "../src/core/preparation-cli.mjs";
 import { createPreparationResult } from "../src/core/participant-state.mjs";
+import {
+  enableCaptions,
+  installCaptionCollector,
+} from "../src/providers/google-meet/meet-captions.mjs";
 
 const CONTROLLER_EXTENSION_ID = "jlikakgdldiihhflkobhnpfegjlcakdd";
 
@@ -158,42 +162,102 @@ async function visibleControlState({ on, off }) {
   return "unavailable";
 }
 
-const turnMicrophoneOn = page.getByRole("button", {
-  name: /マイクをオン(?:にする)?|turn on microphone|unmute microphone/i,
-});
-const turnMicrophoneOff = page.getByRole("button", {
-  name: /マイクをオフ(?:にする)?|マイクをミュート|turn off microphone|mute microphone/i,
-});
-let microphoneState = await visibleControlState({ on: turnMicrophoneOn, off: turnMicrophoneOff });
+// Meet's pre-join toggles are readable two ways, and the accessible name is the
+// fragile one: while a modal dialog is open (the waiting-room "Are you still
+// there?" prompt, for one) everything outside it drops out of the accessibility
+// tree, so getByRole() returns nothing and a control that is plainly on screen
+// reads as missing — which is what stopped the launcher before admission.
+// Reading aria-label straight off the DOM is immune to that. State comes from
+// which label is present rather than from data-is-muted, because that attribute
+// briefly reports the wrong value while Meet is still wiring the control up.
+async function labelledControlState({ onLabel, offLabel }) {
+  return page.evaluate(({ on, off }) => {
+    const onMatcher = new RegExp(on, "i");
+    const offMatcher = new RegExp(off, "i");
+    for (const node of document.querySelectorAll("[aria-label]")) {
+      if (node.getClientRects().length === 0) continue;
+      const label = node.getAttribute("aria-label") || "";
+      if (onMatcher.test(label)) return "off";
+      if (offMatcher.test(label)) return "on";
+    }
+    return "unavailable";
+  }, { on: onLabel.source, off: offLabel.source }).catch(() => "unavailable");
+}
+
+// Meet also renders these controls progressively, so poll rather than sample once.
+async function settledControlState(controls, { timeout = 10_000, interval = 250 } = {}) {
+  const deadline = Date.now() + timeout;
+  const read = async () => {
+    const state = await labelledControlState(controls);
+    return state === "unavailable" ? visibleControlState(controls) : state;
+  };
+  let state = await read();
+  while (state === "unavailable" && Date.now() < deadline) {
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, interval));
+    state = await read();
+  }
+  return state;
+}
+
+const MICROPHONE_ON_LABEL = /マイクをオン(?:にする)?|turn on microphone|unmute microphone/i;
+const MICROPHONE_OFF_LABEL = /マイクをオフ(?:にする)?|マイクをミュート|turn off microphone|mute microphone/i;
+const CAMERA_ON_LABEL = /カメラをオン(?:にする)?|turn on camera/i;
+const CAMERA_OFF_LABEL = /カメラをオフ(?:にする)?|turn off camera/i;
+
+const turnMicrophoneOn = page.getByRole("button", { name: MICROPHONE_ON_LABEL });
+const turnMicrophoneOff = page.getByRole("button", { name: MICROPHONE_OFF_LABEL });
+const microphoneControls = {
+  on: turnMicrophoneOn,
+  off: turnMicrophoneOff,
+  onLabel: MICROPHONE_ON_LABEL,
+  offLabel: MICROPHONE_OFF_LABEL,
+};
+let microphoneState = await settledControlState(microphoneControls);
 if (microphoneState === "on") {
   await turnMicrophoneOff.first().click();
   await page.waitForTimeout(300);
-  microphoneState = await visibleControlState({ on: turnMicrophoneOn, off: turnMicrophoneOff });
+  microphoneState = await settledControlState(microphoneControls, { timeout: 2_000 });
 }
 if (microphoneState !== "off") {
   throw new Error("Meet microphone could not be verified as muted before admission.");
 }
 
-const turnCameraOn = page.getByRole("button", {
-  name: /カメラをオン(?:にする)?|turn on camera/i,
-});
-const turnCameraOff = page.getByRole("button", {
-  name: /カメラをオフ(?:にする)?|turn off camera/i,
-});
-let cameraState = await visibleControlState({ on: turnCameraOn, off: turnCameraOff });
+const turnCameraOn = page.getByRole("button", { name: CAMERA_ON_LABEL });
+const turnCameraOff = page.getByRole("button", { name: CAMERA_OFF_LABEL });
+const cameraControls = {
+  on: turnCameraOn,
+  off: turnCameraOff,
+  onLabel: CAMERA_ON_LABEL,
+  offLabel: CAMERA_OFF_LABEL,
+};
+let cameraState = await settledControlState(cameraControls);
 if (cameraState === "on") {
   await turnCameraOff.first().click();
   await page.waitForTimeout(300);
-  cameraState = await visibleControlState({ on: turnCameraOn, off: turnCameraOff });
+  cameraState = await settledControlState(cameraControls, { timeout: 2_000 });
 }
 if (cameraState === "on") {
   throw new Error("Meet camera could not be disabled before admission.");
 }
+// This launcher grants only the microphone, and granting a permission set
+// replaces the origin's previous one — so the camera ends up denied. That is the
+// outcome we want (a denied camera cannot transmit), but Meet then swaps the
+// camera toggle for an error chip reading "Camera: Permission needed" instead of
+// the "not found" wording below, leaving no control to inspect. Treat a blocked
+// camera as definitively off; only a genuinely unreadable control should stop
+// the launch and ask a person to look.
+const CAMERA_ABSENT_TEXT = /カメラ.*(?:見つかりません|使用できません|利用できません|接続されていません)|(?:camera|webcam).*(?:not found|unavailable|not available|not detected|disconnected)/i;
+const CAMERA_BLOCKED_TEXT = /カメラ.*(?:問題|権限|許可|ブロック)|(?:権限|アクセス).*(?:必要|許可されていません)|(?:camera|webcam).*(?:problem|permission|blocked|denied)|permission needed/i;
+
 if (cameraState === "unavailable") {
   const bodyText = await page.locator("body").innerText().catch(() => "");
-  cameraState = /カメラ.*(?:見つかりません|使用できません|利用できません|接続されていません)|(?:camera|webcam).*(?:not found|unavailable|not available|not detected|disconnected)/i.test(
-    bodyText,
-  )
+  const labelText = await page.evaluate(() =>
+    [...document.querySelectorAll("[aria-label]")]
+      .filter((node) => node.getClientRects().length > 0)
+      .map((node) => node.getAttribute("aria-label"))
+      .join("\n")).catch(() => "");
+  const cameraText = `${bodyText}\n${labelText}`;
+  cameraState = CAMERA_ABSENT_TEXT.test(cameraText) || CAMERA_BLOCKED_TEXT.test(cameraText)
     ? "unavailable"
     : "control-unavailable";
 }
@@ -271,6 +335,20 @@ if (options.join) {
   }
 }
 
+// Captions are the transcript source (AGENTS.md §6). Switched on here so that
+// nobody has to remember to, and only once actually in the call — the control
+// does not exist on the pre-join screen. Best-effort: a meeting without a
+// transcript is still a meeting, so failures are reported, never thrown.
+let captions = { enabled: false, alreadyOn: false, collector: "not-installed" };
+if (connection === "joined") {
+  try {
+    captions = { ...(await enableCaptions(page, locatorIsVisible)), collector: "not-installed" };
+    captions.collector = await installCaptionCollector(page);
+  } catch (error) {
+    captions.error = error.message;
+  }
+}
+
 const legacyJoinStatus = actionRequired === "camera-check"
   ? "manual-camera-check-required"
   : actionRequired === "google-login"
@@ -305,6 +383,7 @@ const result = createPreparationResult({
   speakerDevice: resolvedSpeakerDevice,
   actionRequired,
   joinStatus: legacyJoinStatus,
+  captions,
   title: await page.title(),
 });
 

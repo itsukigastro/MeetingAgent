@@ -18,7 +18,7 @@ assert.equal(cdpConnectionOptions({ noDefaults: false }).noDefaults, true);
 const productionScripts = [
   "native-host.mjs",
   "open-chrome-page.mjs",
-  "prepare-chatgpt-live.mjs",
+  "prepare-agent.mjs",
   "prepare-meet.mjs",
   "prepare-zoom.mjs",
   "set-participant-mic.mjs",

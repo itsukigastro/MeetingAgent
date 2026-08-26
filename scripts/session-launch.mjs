@@ -56,7 +56,7 @@ const cdp = `http://127.0.0.1:${process.env.MEETING_COPILOT_CDP_PORT || "9223"}`
 const operations = {
   installControlUi: () => run(resolve(repoRoot, "scripts/install-control-ui.sh"), ["--quiet"]),
   configureAudio: () => run(resolve(repoRoot, "scripts/configure-audio.sh")),
-  startVoice: () => run(resolve(repoRoot, "scripts/open-chatgpt-live.sh"), ["--restart-profile"]),
+  startVoice: () => run(resolve(repoRoot, "scripts/open-agent.sh"), ["--restart-profile"]),
   prepareParticipant: () => run(
     resolve(repoRoot, "scripts/open-gpt-participant.sh"),
     ["--url-stdin", "--join"],

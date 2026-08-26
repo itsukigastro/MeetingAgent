@@ -106,130 +106,97 @@ try {
     throw new Error(`Chrome internal page did not open: ${internalPageOutput}`);
   }
 
-  await context.route("https://chatgpt.com/**", (route) =>
-    route.fulfill({
+  // Stand in for the deployed Gastrobrain agent. The real page connects to the
+  // Realtime API on load and then publishes `data-meeting-status`; here the
+  // attribute is set directly, because what this test covers is the launcher's
+  // half of that contract — tab replacement, and the three states it acts on.
+  const agentOrigin = "https://agent.example.test";
+  const agentUrl = `${agentOrigin}/voice?mode=meeting`;
+  await context.route(`${agentOrigin}/**`, (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.startsWith("/login")) {
+      return route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Sign in</title>" });
+    }
+    // /voice-fails simulates the page failing to reach the Realtime API.
+    const state = path.startsWith("/voice-fails") ? "error" : "listening";
+    return route.fulfill({
       contentType: "text/html",
-      body: `<!doctype html><html><body>
-        <script>
-          const nativeEnumerateDevices = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
-          navigator.mediaDevices.enumerateDevices = async () => {
-            const devices = await nativeEnumerateDevices();
-            const input = devices.find((device) => device.kind === 'audioinput');
-            const output = devices.find((device) => device.kind === 'audiooutput');
-            return [
-              ...devices,
-              ...(input ? [{ kind: 'audioinput', deviceId: input.deviceId, label: 'Meetron: Meeting to AI (Virtual)' }] : []),
-              ...(output ? [{ kind: 'audiooutput', deviceId: output.deviceId, label: 'Meetron: AI to Meeting (Virtual)' }] : []),
-            ];
-          };
-        </script>
-        <button aria-label="Open profile menu">Profile</button>
-        <textarea aria-label="New chat in Meetron"></textarea>
-        <button aria-label="Start voice" onclick="void (async () => {
-          window.__testVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          window.__testVoiceContext = new AudioContext();
-          window.__testAudioConstructorElement = new Audio();
-          window.__testCreatedAudioElement = document.createElement('audio');
-          window.__testCreatedAudioElement.srcObject = new MediaStream();
-          if (location.pathname.includes('g-p-failure')) {
-            window.__testCreatedAudioElement.setSinkId = () => Promise.reject(new Error('simulated sink failure'));
-          }
-          this.setAttribute('aria-label', 'End voice');
-          document.querySelector('#microphone').hidden = false;
-        })()">Voice</button>
-        <button id="microphone" aria-label="Turn off microphone" hidden>Mic</button>
-      </body></html>`,
-    }),
-  );
+      body: `<!doctype html><html><body><script>
+        document.documentElement.dataset.meetingStatus = ${JSON.stringify(state)};
+      </script></body></html>`,
+    });
+  });
   await context.route("https://meet.google.com/**", (route) =>
     route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Meet preserved</title>" }),
   );
 
   const meetPage = await context.newPage();
   await meetPage.goto("https://meet.google.com/abc-defg-hij");
-  const oldChatgptPage = await context.newPage();
-  await oldChatgptPage.goto("https://chatgpt.com/old-chat");
+  const staleAgentPage = await context.newPage();
+  await staleAgentPage.goto(`${agentOrigin}/voice?mode=meeting&stale=1`);
 
-  const { stdout } = await execFileAsync(
-    process.execPath,
-    [
-      resolve(repoRoot, "scripts/prepare-chatgpt-live.mjs"),
-      "--cdp",
-      `http://127.0.0.1:${port}`,
-      "--project-url",
-      "https://chatgpt.com/g/g-p-test/project",
-      "--input-device",
-      "Meetron: Meeting to AI",
-      "--input-device-uid",
-      "io.github.bb8ad8.meetron.audio.meeting-to-ai.device",
-      "--output-device",
-      "Meetron: AI to Meeting",
-      "--output-device-uid",
-      "io.github.bb8ad8.meetron.audio.ai-to-meeting.device",
-      "--replace-tab",
-    ],
-    { cwd: repoRoot, timeout: 30_000 },
-  );
-  const result = JSON.parse(stdout);
-  const pages = context.pages();
-  const meetPreserved = pages.some((page) => page.url().startsWith("https://meet.google.com/"));
-  const chatgptPages = pages.filter((page) => page.url().startsWith("https://chatgpt.com/"));
-
-  if (
-    result.status !== "voice-active" ||
-    result.replacedTab !== true ||
-    result.audioInput?.routed !== true ||
-    !result.audioInput?.device?.startsWith("Meetron: Meeting to AI") ||
-    result.audioInput?.inputRequests !== 1 ||
-    result.audioOutput?.routed !== true ||
-    !result.audioOutput?.device?.startsWith("Meetron: AI to Meeting") ||
-    result.audioOutput?.audioContexts !== 1 ||
-    result.audioOutput?.mediaElements !== 2 ||
-    result.audioOutput?.detachedMediaElements !== 2 ||
-    result.internalAudioOutput?.checked !== true ||
-    result.internalAudioOutput?.unexpectedOutputs?.length !== 0 ||
-    !oldChatgptPage.isClosed() ||
-    !meetPreserved ||
-    meetPage.isClosed() ||
-    chatgptPages.length !== 1
-  ) {
-    throw new Error(`ChatGPT tab replacement did not preserve Meet: ${JSON.stringify({ result, meetPreserved, chatgptPages: chatgptPages.length })}`);
-  }
-
-  let routingFailureDetected = false;
-  try {
-    await execFileAsync(
+  const runPrepare = (url, extraArgs = []) =>
+    execFileAsync(
       process.execPath,
       [
-        resolve(repoRoot, "scripts/prepare-chatgpt-live.mjs"),
+        resolve(repoRoot, "scripts/prepare-agent.mjs"),
         "--cdp",
         `http://127.0.0.1:${port}`,
-        "--project-url",
-        "https://chatgpt.com/g/g-p-failure/project",
-        "--input-device",
-        "Meetron: Meeting to AI",
-        "--input-device-uid",
-        "io.github.bb8ad8.meetron.audio.meeting-to-ai.device",
-        "--output-device",
-        "Meetron: AI to Meeting",
-        "--output-device-uid",
-        "io.github.bb8ad8.meetron.audio.ai-to-meeting.device",
-        "--replace-tab",
+        "--agent-url",
+        url,
+        "--timeout",
+        "15000",
+        ...extraArgs,
       ],
       { cwd: repoRoot, timeout: 30_000 },
     );
-  } catch (error) {
-    routingFailureDetected = /simulated sink failure/.test(error.stderr || error.message);
+
+  const { stdout } = await runPrepare(agentUrl, ["--replace-tab"]);
+  const pages = context.pages();
+  const agentPages = pages.filter((page) => page.url().startsWith(agentOrigin));
+
+  if (
+    !/listening/.test(stdout) ||
+    !staleAgentPage.isClosed() ||
+    meetPage.isClosed() ||
+    agentPages.length !== 1
+  ) {
+    throw new Error(
+      `Agent tab replacement did not preserve Meet: ${JSON.stringify({
+        stdout,
+        staleClosed: staleAgentPage.isClosed(),
+        meetClosed: meetPage.isClosed(),
+        agentPages: agentPages.length,
+      })}`,
+    );
   }
 
-  const remainingPages = context.pages();
-  if (
-    !routingFailureDetected ||
-    remainingPages.some((candidate) => candidate.url().startsWith("https://chatgpt.com/")) ||
-    !remainingPages.some((candidate) => candidate.url().startsWith("https://meet.google.com/")) ||
-    meetPage.isClosed()
-  ) {
-    throw new Error("ChatGPT Voice routing failure did not close only the Voice tab.");
+  // A page that cannot start must fail loudly. Silent failure here is the worst
+  // case: Meetron reports success and the agent sits mute through the 商談.
+  let startFailureDetected = false;
+  try {
+    await runPrepare(`${agentOrigin}/voice-fails?mode=meeting`, ["--replace-tab"]);
+  } catch (error) {
+    startFailureDetected = /failed to start/i.test(error.stderr || error.message);
+  }
+
+  // Not signed in is its own exit code, so the launcher can say "log in once"
+  // rather than reporting a generic timeout.
+  let loginExitCode = null;
+  try {
+    await runPrepare(`${agentOrigin}/login?mode=meeting`);
+  } catch (error) {
+    loginExitCode = error.code;
+  }
+
+  if (!startFailureDetected || loginExitCode !== 10 || meetPage.isClosed()) {
+    throw new Error(
+      `Agent failure handling is wrong: ${JSON.stringify({
+        startFailureDetected,
+        loginExitCode,
+        meetClosed: meetPage.isClosed(),
+      })}`,
+    );
   }
 } finally {
   await browser?.close().catch(() => {});
@@ -243,4 +210,4 @@ try {
   await rm(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
-process.stdout.write("Unified profile routes detached audio and cleans up Voice failures.\n");
+process.stdout.write("Unified profile replaces only the agent tab and reports agent failures.\n");

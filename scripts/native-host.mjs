@@ -183,49 +183,43 @@ async function connectDedicatedChrome() {
   return dedicatedBrowserConnection;
 }
 
-async function getChatgptPage() {
+async function getAgentPage() {
   const browser = await connectDedicatedChrome();
+  const origin = new URL(getAgentUrl()).origin;
   return browser
     .contexts()
     .flatMap((context) => context.pages())
-    .find((page) => page.url().startsWith("https://chatgpt.com/"));
+    .find((page) => page.url().startsWith(origin));
 }
 
-async function getChatgptStatus() {
+/**
+ * The agent's state, read from the one attribute the page publishes
+ * (`data-meeting-status`: connecting | listening | answering | error | ended).
+ *
+ * The ChatGPT version of this function inspected button labels in someone
+ * else's UI. We own this page, so it tells us directly.
+ */
+async function getAgentStatus() {
   try {
-    const page = await getChatgptPage();
+    const page = await getAgentPage();
     if (!page) {
       return { browserConnected: true, voiceActive: false, microphoneOn: false };
     }
 
-    const endVoice = page.getByRole("button", {
-      name: /^(音声を終了する|End voice)$/i,
-    });
-    const microphoneOn = page.getByRole("button", {
-      name: /^(マイクをオフにする|Turn off microphone)$/i,
-    });
-
-    const audioOutput = await page.evaluate(() => {
-      const state = globalThis.__meetingCopilotAudioRouting;
-      if (!state) return { routed: false, device: "", internalChecked: false };
-      const internalCheck = state.internalAudioOutput;
-      return {
-        routed:
-          state.failures.length === 0 &&
-          internalCheck?.checked === true &&
-          (internalCheck.unexpectedOutputs?.length || 0) === 0,
-        device: state.label,
-        internalChecked: internalCheck?.checked === true,
-        unexpectedOutputs: internalCheck?.unexpectedOutputs || [],
-      };
-    });
+    const state = await page.evaluate(
+      () => document.documentElement.dataset.meetingStatus || "",
+    );
+    const live = state === "listening" || state === "answering";
 
     return {
       browserConnected: true,
-      voiceActive: (await endVoice.count()) > 0 && (await endVoice.first().isVisible()),
-      microphoneOn:
-        (await microphoneOn.count()) > 0 && (await microphoneOn.first().isVisible()),
-      audioOutput,
+      state,
+      voiceActive: live,
+      // The agent's microphone is the Realtime session itself: live means it is
+      // hearing the room. Whether it *speaks* is the wake-word gate's business,
+      // not a mute button's.
+      microphoneOn: live,
+      answering: state === "answering",
       title: await page.title(),
     };
   } catch (error) {
@@ -286,34 +280,13 @@ async function getDedicatedMeetingStatus(providerId = activeProviderId()) {
 }
 
 async function stopVoice() {
-  const page = await getChatgptPage();
+  const page = await getAgentPage();
   if (!page) {
     return { stopped: false, alreadyStopped: true };
   }
-
-  const rateLimitDialog = page.locator('[data-testid="modal-conversation-history-rate-limit"]');
-  if (await locatorIsVisible(rateLimitDialog)) {
-    const acknowledge = rateLimitDialog.getByRole("button", {
-      name: /^(了解|OK|Got it)$/i,
-    });
-    if (await locatorIsVisible(acknowledge)) {
-      await acknowledge.first().click({ force: true, timeout: 5_000 });
-      await rateLimitDialog.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
-    }
-  }
-
-  const endVoice = page.getByRole("button", {
-    name: /^(音声を終了する|End voice)$/i,
-  });
-  if ((await endVoice.count()) === 0 || !(await endVoice.first().isVisible())) {
-    return { stopped: false, alreadyStopped: true };
-  }
-
-  await endVoice.first().click({ force: true, timeout: 5_000 });
-  await endVoice.first().waitFor({ state: "hidden", timeout: 10_000 }).catch(() => {});
-  if (await locatorIsVisible(endVoice)) {
-    throw new Error("ChatGPT Voiceの終了状態を確認できませんでした");
-  }
+  // Closing the tab is the whole teardown: the page closes its Realtime
+  // transport on unload, which is what stops the OpenAI session billing.
+  await page.close();
   return { stopped: true, alreadyStopped: false };
 }
 
@@ -322,45 +295,60 @@ async function leaveDedicatedMeeting(providerId = activeProviderId()) {
   return getMeetingProvider(providerId).leave(browser, locatorIsVisible);
 }
 
-function projectConfigured() {
-  const projectUrl = getProjectUrl();
-  if (!projectUrl) {
-    return false;
+/**
+ * The Gastrobrain voice agent. Unlike the ChatGPT Project URL it replaces, this
+ * has a working default, so there is nothing for a user to configure — the
+ * setup wizard's ChatGPT step is now dead weight rather than a prerequisite.
+ * Override in `.meeting-copilot.env` for local development.
+ */
+const DEFAULT_AGENT_URL = "https://gastron-brain-web.vercel.app/voice?mode=meeting";
+
+function getAgentUrl() {
+  if (existsSync(envPath)) {
+    const match = readFileSync(envPath, "utf8").match(
+      /^MEETING_COPILOT_AGENT_URL=['"]?([^'"\r\n]+)['"]?$/m,
+    );
+    if (match?.[1]) {
+      try {
+        return normalizeAgentUrl(match[1]);
+      } catch {
+        // A broken override should not strand the host on an unusable URL.
+      }
+    }
   }
+  return DEFAULT_AGENT_URL;
+}
+
+function projectConfigured() {
+  // Always true now: the agent URL is defaulted. Kept because the extension's
+  // status UI reads `configuration.projectConfigured`, and the extension is
+  // scheduled for deletion rather than modification.
   try {
-    normalizeProjectUrl(projectUrl);
+    normalizeAgentUrl(getAgentUrl());
     return true;
   } catch {
     return false;
   }
 }
 
-function getProjectUrl() {
-  if (!existsSync(envPath)) {
-    return "";
-  }
-  const match = readFileSync(envPath, "utf8").match(
-    /^MEETING_COPILOT_CHATGPT_PROJECT_URL=['"]?([^'"\r\n]+)['"]?$/m,
-  );
-  return match?.[1] || "";
-}
-
-function normalizeProjectUrl(value) {
+function normalizeAgentUrl(value) {
   let url;
   try {
     url = new URL(String(value || "").trim());
   } catch {
-    throw new Error("有効なChatGPT Project URLを入力してください");
+    throw new Error("有効なURLを入力してください");
   }
-  if (
-    url.protocol !== "https:" ||
-    url.hostname !== "chatgpt.com" ||
-    !/^\/g\/g-p-[A-Za-z0-9_-]+\/project\/?$/.test(url.pathname)
-  ) {
-    throw new Error("ChatGPT Projectの /g/g-p-.../project URLを入力してください");
+  // http is allowed only on localhost, which browsers treat as a secure context
+  // so getUserMedia still works. That is what makes `next dev` testable without
+  // deploying; anything else must be https.
+  const isLocalhost = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocalhost)) {
+    throw new Error("エージェントURLはhttps（localhostのみhttp可）である必要があります");
   }
-  url.search = "";
-  url.hash = "";
+  if (url.searchParams.get("mode") !== "meeting") {
+    // Without it the agent replies to every utterance in the room.
+    throw new Error("エージェントURLには mode=meeting が必要です");
+  }
   return url.toString();
 }
 
@@ -430,8 +418,8 @@ async function getSetupStatus(audioStatus = null) {
   const audio = audioStatus || await getAudioStatus();
   const confirmations = readSetupState();
   const audioDevicesReady = audio.devicesReady === true;
-  const projectUrl = getProjectUrl();
-  const projectIsConfigured = Boolean(projectUrl) && projectConfigured();
+  const projectUrl = getAgentUrl();
+  const projectIsConfigured = projectConfigured();
   const extensionInstalled = dedicatedExtensionInstalled();
   return {
     hostConnected: true,
@@ -454,17 +442,23 @@ async function getSetupStatus(audioStatus = null) {
       audioDevicesReady &&
       projectIsConfigured &&
       extensionInstalled &&
-      confirmations.chatgptLoginConfirmed &&
+      // `chatgptLoginConfirmed` now means "signed in to Gastrobrain". It is no
+      // longer required up front: prepare-agent.mjs exits 10 with a clear
+      // message if the profile is not signed in, which is a better signal than
+      // a checkbox somebody ticked in a wizard.
       confirmations.googleLoginConfirmed,
   };
 }
 
 function saveProjectUrl(payload) {
-  const projectUrl = normalizeProjectUrl(payload?.projectUrl);
+  // The wizard's field is now an agent-URL override. Nobody needs to use it —
+  // `DEFAULT_AGENT_URL` works — but rejecting the call outright would break the
+  // extension, which we are not editing.
+  const projectUrl = normalizeAgentUrl(payload?.projectUrl);
   const existing = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
-  const setting = `MEETING_COPILOT_CHATGPT_PROJECT_URL='${projectUrl}'`;
-  const updated = /^MEETING_COPILOT_CHATGPT_PROJECT_URL=.*$/m.test(existing)
-    ? existing.replace(/^MEETING_COPILOT_CHATGPT_PROJECT_URL=.*$/m, setting)
+  const setting = `MEETING_COPILOT_AGENT_URL='${projectUrl}'`;
+  const updated = /^MEETING_COPILOT_AGENT_URL=.*$/m.test(existing)
+    ? existing.replace(/^MEETING_COPILOT_AGENT_URL=.*$/m, setting)
     : `${existing.trimEnd()}${existing.trim() ? "\n" : ""}${setting}\n`;
   const temporaryPath = `${envPath}.${process.pid}.tmp`;
   writeFileSync(temporaryPath, updated, { mode: 0o600 });
@@ -489,14 +483,9 @@ function openDedicatedChromeSetup() {
 }
 
 function openChatgptSetup() {
-  if (!projectConfigured()) {
-    throw new Error("先にChatGPT Project URLを保存してください");
-  }
-  return runDetached(
-    resolve(scriptsDir, "open-chatgpt-live.sh"),
-    [],
-    "setup-chatgpt.log",
-  );
+  // Command name kept: the extension still sends `setup.open.chatgpt`, and the
+  // extension is scheduled for deletion rather than modification.
+  return runDetached(resolve(scriptsDir, "open-agent.sh"), [], "setup-agent.log");
 }
 
 function confirmSetupStep(payload) {
@@ -660,16 +649,18 @@ function validateMeeting(payload) {
 
 async function getStatus() {
   const providerId = activeProviderId();
-  const [audio, chatgpt, dedicatedMeeting] = await Promise.all([
+  const [audio, agent, dedicatedMeeting] = await Promise.all([
     getAudioStatus(),
-    getChatgptStatus(),
+    getAgentStatus(),
     getDedicatedMeetingStatus(providerId),
   ]);
   const setup = await getSetupStatus(audio);
   return {
     host: { connected: true, version: appVersion },
     audio,
-    chatgpt,
+    agent,
+    // Compatibility alias: the extension's panel reads `chatgpt`.
+    chatgpt: agent,
     protocol: { version: PROTOCOL_VERSION },
     supportedProviders: supportedMeetingProviders(),
     dedicatedMeeting,
@@ -690,10 +681,10 @@ async function getStatus() {
 async function restartVoice() {
   const meetingBefore = await getDedicatedMeetingStatus();
   await stopVoice();
-  const result = await run(resolve(scriptsDir, "open-chatgpt-live.sh"), ["--replace-tab"], 120_000);
+  const result = await run(resolve(scriptsDir, "open-agent.sh"), ["--replace-tab"], 120_000);
   const meetingAfter = await getDedicatedMeetingStatus();
   if (meetingBefore.connection === "joined" && meetingAfter.connection !== "joined") {
-    throw new Error("Voiceは再起動しましたが、会議参加状態を維持できませんでした");
+    throw new Error("エージェントは再起動しましたが、会議参加状態を維持できませんでした");
   }
   return {
     restarted: true,

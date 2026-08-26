@@ -100,7 +100,7 @@ child.stdout.on("data", (chunk) => {
     validUrl.data?.providerId !== "google-meet" ||
     validUrl.data?.displayUrl !== "https://meet.google.com/abc-defg-hij" ||
     invalidProject?.ok !== false ||
-    !invalidProject.error?.includes("ChatGPT Project") ||
+    !invalidProject.error?.includes("mode=meeting") ||
     invalidConfirmation?.ok !== false ||
     setupStatus?.ok !== true ||
     setupStatus.data?.dedicatedChrome?.extensionInstalled !== true ||

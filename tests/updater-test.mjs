@@ -33,7 +33,7 @@ function createLegacyTarget(root) {
   writeFileSync(resolve(root, "scripts/native-host.sh"), "#!/usr/bin/env bash\n");
   writeFileSync(
     resolve(root, ".meeting-copilot.env"),
-    "MEETING_COPILOT_CHATGPT_PROJECT_URL='https://chatgpt.com/g/g-p-test/project'\n",
+    "MEETING_COPILOT_AGENT_URL='https://agent.example.com/voice?mode=meeting'\n",
   );
   writeFileSync(resolve(root, ".meeting-copilot-runtime/sentinel"), "preserved\n");
 }
@@ -86,7 +86,7 @@ try {
     JSON.parse(readFileSync(resolve(targetRoot, "extension/manifest.json"), "utf8")).version,
     "0.9.0",
   );
-  assert.match(readFileSync(resolve(targetRoot, ".meeting-copilot.env"), "utf8"), /g-p-test/);
+  assert.match(readFileSync(resolve(targetRoot, ".meeting-copilot.env"), "utf8"), /mode=meeting/);
   assert.equal(
     readFileSync(resolve(targetRoot, ".meeting-copilot-runtime/sentinel"), "utf8").trim(),
     "preserved",

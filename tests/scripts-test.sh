@@ -366,10 +366,10 @@ else
   fail 'Zoom preparation help'
 fi
 
-if node "$repo_root/scripts/prepare-chatgpt-live.mjs" --help >/dev/null; then
-  pass 'ChatGPT Voice preparation help'
+if node "$repo_root/scripts/prepare-agent.mjs" --help >/dev/null; then
+  pass 'agent preparation help'
 else
-  fail 'ChatGPT Voice preparation help'
+  fail 'agent preparation help'
 fi
 
 if node "$repo_root/scripts/open-chrome-page.mjs" --help >/dev/null; then
@@ -566,6 +566,11 @@ elif [ -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' ]; then
   else
     fail 'Meet camera state handling'
   fi
+  if node "$repo_root/tests/meet-captions-test.mjs" >/dev/null; then
+    pass 'Meet caption collection'
+  else
+    fail 'Meet caption collection'
+  fi
   if node "$repo_root/tests/zoom-web-provider-test.mjs" >/dev/null; then
     pass 'Zoom Web status, microphone, redaction, and leave handling'
   else
@@ -646,17 +651,28 @@ else
   fail 'short default Meet admission delay'
 fi
 
-chatgpt_launcher_output="$(MEETING_COPILOT_CHROME_PATH="$fake_chrome" \
+agent_launcher_output="$(MEETING_COPILOT_CHROME_PATH="$fake_chrome" \
   MEETING_COPILOT_PROFILE_DIR="$temp_dir/profile" \
   MEETING_COPILOT_CDP_PORT=9223 \
-  MEETING_COPILOT_CHATGPT_PROJECT_URL='https://chatgpt.com/g/g-p-test/project' \
-  "$repo_root/scripts/open-chatgpt-live.sh" --restart-profile --dry-run)"
-if printf '%s\n' "$chatgpt_launcher_output" | grep -F -- '--remote-debugging-port=9223' >/dev/null &&
-  printf '%s\n' "$chatgpt_launcher_output" | grep -F -- "--user-data-dir=$temp_dir/profile" >/dev/null &&
-  printf '%s\n' "$chatgpt_launcher_output" | grep -F -- 'https://chatgpt.com/g/g-p-test/project' >/dev/null; then
-  pass 'ChatGPT Voice launcher dry run'
+  MEETING_COPILOT_AGENT_URL='https://agent.example.com/voice?mode=meeting' \
+  "$repo_root/scripts/open-agent.sh" --restart-profile --dry-run)"
+if printf '%s\n' "$agent_launcher_output" | grep -F -- '--remote-debugging-port=9223' >/dev/null &&
+  printf '%s\n' "$agent_launcher_output" | grep -F -- "--user-data-dir=$temp_dir/profile" >/dev/null &&
+  printf '%s\n' "$agent_launcher_output" | grep -F -- 'https://agent.example.com/voice' >/dev/null &&
+  printf '%s\n' "$agent_launcher_output" | grep -F -- 'mode=meeting' >/dev/null; then
+  pass 'agent launcher dry run'
 else
-  fail 'ChatGPT Voice launcher dry run'
+  fail 'agent launcher dry run'
+fi
+
+# mode=meeting is the wake-word gate. A URL without it must never launch:
+# the agent would answer every utterance in the 商談.
+if MEETING_COPILOT_CHROME_PATH="$fake_chrome" \
+  MEETING_COPILOT_PROFILE_DIR="$temp_dir/profile" \
+  "$repo_root/scripts/open-agent.sh" --agent-url 'https://agent.example.com/voice' --dry-run >/dev/null 2>&1; then
+  fail 'agent launcher rejects a URL without mode=meeting'
+else
+  pass 'agent launcher rejects a URL without mode=meeting'
 fi
 
 if MEETING_COPILOT_CHROME_PATH="$fake_chrome" \

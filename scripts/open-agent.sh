@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
 
+# Launch (or reuse) the dedicated Chrome and bring up the Gastrobrain voice
+# agent in it. Replaces open-chatgpt-live.sh.
+#
+# Unlike the ChatGPT version there is no Project URL to configure: the agent has
+# one address, defaulted below and overridable for local development. The only
+# manual step left is signing in to Gastrobrain once per profile.
+
 set -eu
 
 dry_run=0
 restart_profile=0
 replace_tab=0
-project_url=''
+agent_url=''
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-environment_project_url="${MEETING_COPILOT_CHATGPT_PROJECT_URL:-}"
+
+# The deployed agent. `mode=meeting` is what selects the Meetron loopback
+# devices and the wake-word gate; without it the page answers every utterance.
+default_agent_url='https://gastron-brain-web.vercel.app/voice?mode=meeting'
+
+environment_agent_url="${MEETING_COPILOT_AGENT_URL:-}"
 environment_cdp_port="${MEETING_COPILOT_CDP_PORT:-}"
 
 if [ -f "$repo_root/.meeting-copilot.env" ]; then
@@ -15,8 +27,9 @@ if [ -f "$repo_root/.meeting-copilot.env" ]; then
   . "$repo_root/.meeting-copilot.env"
 fi
 
-if [ -n "$environment_project_url" ]; then
-  MEETING_COPILOT_CHATGPT_PROJECT_URL="$environment_project_url"
+# A value from the real environment wins over the env file.
+if [ -n "$environment_agent_url" ]; then
+  MEETING_COPILOT_AGENT_URL="$environment_agent_url"
 fi
 if [ -n "$environment_cdp_port" ]; then
   MEETING_COPILOT_CDP_PORT="$environment_cdp_port"
@@ -24,33 +37,33 @@ fi
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/open-chatgpt-live.sh [options]
+Usage: ./scripts/open-agent.sh [options]
 
-Opens a new voice chat in the shared Meetron Chrome profile.
+Opens the Gastrobrain voice agent in the shared Meetron Chrome profile.
 
 Environment variables:
-  MEETING_COPILOT_CHATGPT_PROJECT_URL   ChatGPT Project landing URL.
-  MEETING_COPILOT_PROFILE_DIR           Shared dedicated user data directory.
-  MEETING_COPILOT_CDP_PORT              Shared local automation port (default: 9223).
-  MEETING_COPILOT_CHROME_PATH           Override the Google Chrome .app path.
+  MEETING_COPILOT_AGENT_URL     Override the agent URL (must include mode=meeting).
+  MEETING_COPILOT_PROFILE_DIR   Shared dedicated user data directory.
+  MEETING_COPILOT_CDP_PORT      Shared local automation port (default: 9223).
+  MEETING_COPILOT_CHROME_PATH   Override the Google Chrome .app path.
 
 Options:
-  --project-url URL    Override the configured ChatGPT Project URL.
+  --agent-url URL     Override the agent URL for this run.
   --restart-profile   Restart the whole shared profile before initial launch.
-  --replace-tab       Replace only ChatGPT tabs and preserve an active Meet.
+  --replace-tab       Replace only the agent tab and preserve an active meeting.
   --dry-run           Print the launch command without opening Chrome.
   -h, --help          Show this help.
 
-The first run leaves the shared browser open for ChatGPT sign-in. Sign in once
-and run this command again. Use --replace-tab for an in-meeting Voice restart.
+The first run leaves the browser open for the Gastrobrain (Slack) sign-in. Sign
+in once and run this command again.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --project-url)
+    --agent-url)
       shift
-      project_url="${1:-}"
+      agent_url="${1:-}"
       ;;
     --restart-profile)
       restart_profile=1
@@ -74,14 +87,17 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-if [ -z "$project_url" ]; then
-  project_url="${MEETING_COPILOT_CHATGPT_PROJECT_URL:-}"
+if [ -z "$agent_url" ]; then
+  agent_url="${MEETING_COPILOT_AGENT_URL:-$default_agent_url}"
 fi
 
-case "$project_url" in
-  https://chatgpt.com/g/g-p-*/project*) ;;
+# http is accepted on localhost only, so `next dev` can be driven without a
+# deploy; browsers treat localhost as a secure context, so getUserMedia works.
+case "$agent_url" in
+  https://*mode=meeting*) ;;
+  http://localhost*mode=meeting*|http://127.0.0.1*mode=meeting*) ;;
   *)
-    printf 'Set MEETING_COPILOT_CHATGPT_PROJECT_URL to a ChatGPT Project landing URL.\n' >&2
+    printf 'The agent URL must include mode=meeting and be https (or http on localhost): %s\n' "$agent_url" >&2
     exit 2
     ;;
 esac
@@ -120,7 +136,7 @@ cdp_port="${MEETING_COPILOT_CDP_PORT:-9223}"
 
 if [ "$dry_run" -eq 1 ]; then
   printf '[DRY RUN] open -na %q --args --remote-debugging-address=127.0.0.1 --remote-debugging-port=%q --use-fake-ui-for-media-stream --user-data-dir=%q --no-first-run --new-window %q\n' \
-    "$chrome_path" "$cdp_port" "$profile_dir" "$project_url"
+    "$chrome_path" "$cdp_port" "$profile_dir" "$agent_url"
   exit 0
 fi
 
@@ -131,32 +147,16 @@ fi
 
 mkdir -p "$profile_dir"
 
-find_profile_pids_for() {
-  target_profile="$1"
-  ps -axo pid=,command= | awk -v profile="--user-data-dir=$target_profile" '
+find_profile_pids() {
+  ps -axo pid=,command= | awk -v profile="--user-data-dir=$profile_dir" '
     index($0, profile) && $0 ~ /Contents\/MacOS\// && $0 !~ /Helper/ { print $1 }
   '
-}
-
-find_profile_pids() {
-  find_profile_pids_for "$profile_dir"
 }
 
 dedicated_endpoint_ready() {
   node "$repo_root/scripts/verify-dedicated-chrome.mjs" \
     --profile-dir "$profile_dir" --port "$cdp_port" >/dev/null 2>&1
 }
-
-legacy_profile_dir="$HOME/Library/Application Support/MeetingCopilot/ChatGPTVoiceChrome"
-if [ "$legacy_profile_dir" != "$profile_dir" ]; then
-  legacy_profile_pids="$(find_profile_pids_for "$legacy_profile_dir")"
-  if [ -n "$legacy_profile_pids" ]; then
-    printf '[INFO] Closing the retired pre-0.6 ChatGPT Chrome profile.\n'
-    for profile_pid in $legacy_profile_pids; do
-      kill "$profile_pid" 2>/dev/null || true
-    done
-  fi
-fi
 
 launch_chrome=1
 profile_pids="$(find_profile_pids)"
@@ -190,7 +190,7 @@ if [ "$launch_chrome" -eq 1 ]; then
     "--user-data-dir=$profile_dir" \
     --no-first-run \
     --new-window \
-    "$project_url"
+    "$agent_url"
 fi
 
 attempts=0
@@ -205,24 +205,20 @@ done
 
 prepare_args=(
   --cdp "http://127.0.0.1:$cdp_port"
-  --project-url "$project_url"
+  --agent-url "$agent_url"
 )
 if [ "$replace_tab" -eq 1 ]; then
   prepare_args+=(--replace-tab)
 fi
 
 set +e
-node "$repo_root/scripts/prepare-chatgpt-live.mjs" "${prepare_args[@]}"
+node "$repo_root/scripts/prepare-agent.mjs" "${prepare_args[@]}"
 prepare_status=$?
 set -e
 
 if [ "$prepare_status" -eq 10 ]; then
-  printf '\nSign in to ChatGPT in the dedicated browser, then rerun this command.\n'
+  printf '\nSign in to Gastrobrain in the dedicated browser, then rerun this command.\n'
   exit 10
 fi
 
-if [ "$prepare_status" -ne 0 ]; then
-  exit "$prepare_status"
-fi
-
-printf '\nChatGPT Voice is active in a new Meetron chat.\n'
+exit "$prepare_status"
