@@ -1,11 +1,44 @@
-.DS_Store
-.meeting-copilot.env
+# Dependencies
 node_modules/
+
+# Environment (machine-specific secrets)
+.meeting-copilot.env
+
+# Runtime state
 .meeting-copilot-runtime/
-/docs/
-/native/**/.build
+
+# Build artifacts
 /dist/
+/native/**/.build
+
+# Certificates and keys
 *.p8
 *.p12
 *.cer
 *.certSigningRequest
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Docs (generated)
+/docs/
+
+# PKG output
+*.pkg
+*.dmg
