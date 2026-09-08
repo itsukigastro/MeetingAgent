@@ -3,6 +3,7 @@
 import { getAudioStatus } from "./audio-backend.mjs";
 import { connectToChromeOverCDP } from "./playwright-cdp.mjs";
 import {
+  activateLocator,
   clickFirstVisible,
   closeOtherPages,
   firstBrowserContext,
@@ -22,6 +23,10 @@ import {
   enableCaptions,
   installCaptionCollector,
 } from "../src/providers/google-meet/meet-captions.mjs";
+import {
+  installChatCollector,
+  openChatPanel,
+} from "../src/providers/google-meet/meet-chat.mjs";
 
 const CONTROLLER_EXTENSION_ID = "jlikakgdldiihhflkobhnpfegjlcakdd";
 
@@ -287,12 +292,43 @@ if (options.join) {
     const joinButton = page.getByRole("button", {
       name: /参加をリクエスト|今すぐ参加|ask to join|join now/i,
     });
+    // When the same Google account is already in the call, Meet does not offer
+    // "join now" at all — it offers to move the call to this device, behind
+    // 「その他の参加方法」. Cherry-picked from upstream `fc7499b`; see AGENTS.md
+    // §4.1. Without it the launcher waits 10s for a button that will never
+    // appear, which is exactly what one shared 商談AI account in two meetings
+    // would hit.
+    const otherJoinMethods = page.getByRole("button", {
+      name: /その他の参加方法|other ways to join|more ways to join/i,
+    });
+    const joinOnThisDevice = page.getByText(
+      /^(このデバイスでも参加|このデバイスで参加|join (?:on )?this device too|join here too)$/i,
+      { exact: true },
+    );
+    const joinOnThisDeviceButton = joinOnThisDevice
+      .first()
+      .locator("xpath=ancestor-or-self::button[1]");
 
     try {
-      await joinButton.first().waitFor({ state: "visible", timeout: 10_000 });
+      await Promise.any([
+        joinButton.first().waitFor({ state: "visible", timeout: 10_000 }),
+        otherJoinMethods.first().waitFor({ state: "visible", timeout: 10_000 }),
+        joinOnThisDevice.first().waitFor({ state: "visible", timeout: 10_000 }),
+      ]);
       await page.waitForTimeout(options.joinDelay * 1_000);
-      // The controller panel can overlap Meet's lower-right join button.
-      await joinButton.first().click({ timeout: 5_000, force: true });
+      if (await locatorIsVisible(joinButton)) {
+        // The controller panel can overlap Meet's lower-right join button.
+        await joinButton.first().click({ timeout: 5_000, force: true });
+      } else if (await locatorIsVisible(joinOnThisDevice)) {
+        await activateLocator(joinOnThisDeviceButton, { method: "dom", timeout: 5_000 });
+      } else {
+        // Join as a second device so the participant keeps its own audio path.
+        // Companion mode does not provide one, which would leave the agent in
+        // the call but unable to hear or speak.
+        await otherJoinMethods.first().click({ timeout: 5_000, force: true });
+        await joinOnThisDevice.first().waitFor({ state: "visible", timeout: 5_000 });
+        await activateLocator(joinOnThisDeviceButton, { method: "dom", timeout: 5_000 });
+      }
 
       await page
         .waitForFunction(
@@ -349,6 +385,21 @@ if (connection === "joined") {
   }
 }
 
+// Chat is the in-meeting control surface and the transcription-free way to ask
+// a question (AGENTS.md §5.2). The panel has to be *open* or Meet renders no
+// messages into the DOM at all, so the collector would poll an empty page.
+// Best-effort for the same reason as captions: no chat is a degraded meeting,
+// not a failed one. `meet-chat-bridge.mjs` drains what this installs.
+let chat = { open: false, alreadyOpen: false, collector: "not-installed" };
+if (connection === "joined") {
+  try {
+    chat = { ...(await openChatPanel(page, locatorIsVisible)), collector: "not-installed" };
+    chat.collector = await installChatCollector(page);
+  } catch (error) {
+    chat.error = error.message;
+  }
+}
+
 const legacyJoinStatus = actionRequired === "camera-check"
   ? "manual-camera-check-required"
   : actionRequired === "google-login"
@@ -384,6 +435,7 @@ const result = createPreparationResult({
   actionRequired,
   joinStatus: legacyJoinStatus,
   captions,
+  chat,
   title: await page.title(),
 });
 

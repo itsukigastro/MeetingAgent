@@ -571,6 +571,16 @@ elif [ -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' ]; then
   else
     fail 'Meet caption collection'
   fi
+  if node "$repo_root/tests/meet-chat-test.mjs" >/dev/null; then
+    pass 'Meet chat collection'
+  else
+    fail 'Meet chat collection'
+  fi
+  if node "$repo_root/tests/meet-chat-bridge-test.mjs" >/dev/null; then
+    pass 'Meet chat bridge delivers commands to the agent tab'
+  else
+    fail 'Meet chat bridge delivery'
+  fi
   if node "$repo_root/tests/zoom-web-provider-test.mjs" >/dev/null; then
     pass 'Zoom Web status, microphone, redaction, and leave handling'
   else
