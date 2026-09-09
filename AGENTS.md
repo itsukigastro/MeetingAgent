@@ -809,20 +809,83 @@ Read these before debugging anything Meet-related; each one cost real time.
 
 ## 9. Running it
 
+### Once per machine
+
 ```bash
 npm ci
 ./scripts/check-env.sh                 # devices + deps; expect 0 failures
 npm test                               # 147 checks, no Xcode needed
-
-./scripts/open-control-ui-setup.sh     # launch dedicated Chrome at chrome://extensions
-./scripts/open-gpt-participant.sh --auto-prepare --join "https://meet.google.com/xxx-yyyy-zzz"
-./scripts/set-meet-mic.sh unmute       # goes through the session API
 ```
 
-Driving the native host directly (what the extension does) is the reliable way
-to exercise session commands: spawn `scripts/native-host.sh` with
-`chrome-extension://jlikakgdldiihhflkobhnpfegjlcakdd/` as argv[2] and speak the
-native-messaging framing (4-byte LE length + JSON).
+Then sign the dedicated Chrome profile into **two** accounts, once each — they
+are unrelated and both are required (§7): **Google**, which joins the Meet, and
+**Gastrobrain** via Slack OIDC, which loads `/voice` and decides what corpus the
+agent may read.
 
-Manual steps that cannot be automated: PKG install (admin password), restart,
-loading the unpacked extension, Google/Slack logins, admitting the participant.
+### Every meeting — five commands, in this order
+
+```bash
+./scripts/open-control-ui-setup.sh     # dedicated Chrome, CDP on 9223
+./scripts/open-agent.sh                # agent tab: /voice?mode=meeting
+./scripts/open-gpt-participant.sh --auto-prepare --join "https://meet.google.com/xxx-yyyy-zzz"
+node scripts/meet-chat-bridge.mjs \
+  --agent-url "https://gastron-brain-web.vercel.app/voice?mode=meeting"
+./scripts/set-meet-mic.sh unmute
+```
+
+The order is load-bearing. `open-agent.sh` must come before the bridge, because
+the bridge finds the agent tab by URL and exits if it is not there; the Meet tab
+must exist before it too, for the same reason.
+
+`--auto-prepare` does more than open a tab: it binds the two Meetron loopback
+devices, turns captions on, opens the chat panel and installs **both**
+collectors (`meet-captions.mjs` and `meet-chat.mjs`). A human still has to admit
+the participant.
+
+**Do not skip the bridge.** It is the only thing carrying Meet chat into
+`window.meetingControl` — without it the agent joins, hears everything and can
+never be woken, quieted or asked anything.
+
+### Driving it during the meeting
+
+Everyone types into normal Meet chat; there is nothing to install:
+
+| Typed in chat | Effect |
+| --- | --- |
+| `商談AI 起きて` | state → `open` |
+| `商談AI 静かに` | state → `asleep` |
+| `商談AI <question>` | answers it, and opens the gate |
+
+While `open`, follow-ups are answered **without** repeating the name until 90 s
+of silence puts it back to sleep (§5.2). `asleep` is the muzzle — there is no
+third state.
+
+### Watching it from outside the page
+
+The agent tab publishes its own state on `<html>`, and that is the entire
+contract between the page and Meetron:
+
+- `data-meeting-status` = `connecting | listening | answering | error | ended`
+- `data-meeting-agent-state` = `asleep | open`
+
+Over CDP with `scripts/playwright-cdp.mjs`, `document.documentElement.dataset`
+is the fastest way to see what the agent thinks is happening.
+
+### First real meeting — the three things only a live call can settle
+
+Everything else is covered by tests; these are not, and each has a cheap check
+(§7):
+
+1. **Do the caption selectors still match Meet?** `drainMeetCaptions(page)` over
+   CDP. If `region` comes back empty, only `CAPTION_REGION_SELECTORS` needs
+   changing — the collector logic is already proven.
+2. **Does the chat path work end to end?** Type `商談AI 起きて` and watch
+   `data-meeting-agent-state` flip to `open`. The bridge logs every message it
+   hands over.
+3. **Does audio actually route both ways?** The room hears the agent, and the
+   agent's transcript shows the room's words.
+
+### Manual steps that cannot be automated
+
+PKG install (admin password), the restart it wants, the two logins above, and
+admitting the participant into the call.
