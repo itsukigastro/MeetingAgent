@@ -7,6 +7,14 @@
 > called blockers in August are no longer blockers, and one thing it did not
 > mention at all is now the top defect.
 >
+> **Revised 2026-09-21 — the AI joins Meet as `system-dev@gastroduce-japan.co.jp`.**
+> That one account replaces both the personal Gmail Stage A was using and the
+> `商談AI@gastroduce-japan.co.jp` account this doc spent a month waiting on admin
+> to create. §5.1, §6 and §7 changed; **nothing in §6 is blocked on admin any
+> more.** One small task takes its place: the account's Google *display name*
+> has to be set to 商談AI, because Meet shows that name and offers no way to
+> override it (§6, identity bug).
+>
 > **The website half of this product is not in this repo and is not yours.** It
 > is being built in parallel against `../gastro/docs/MEETINGS_WEB.md`. That file
 > owns the database, the pages and the HTTP API; this file owns everything that
@@ -256,8 +264,8 @@ files we have rewritten — and drags the ChatGPT module back in.
 When the same Google account is already in the call, Meet replaces 「今すぐ参加」
 with 「その他の参加方法」→「このデバイスでも参加」. Our `prepare-meet.mjs:287-295`
 matches only the former, so it waits 10 s and gives up. This will bite the moment
-one shared `商談AI@` account is used for two meetings, and it is the thing that
-would otherwise force a second Google identity.
+the shared `system-dev@` account is used for two meetings at once, and it is the
+thing that would otherwise force a second Google identity.
 
 **Policy: stay pinned at `7f04a56` + our commits. Pull specific hunks by hand,
 never `git merge upstream/main`.**
@@ -311,8 +319,8 @@ Google Calendar → cloud job queue → VPS: Chrome + Playwright joins Meet
 Cost ≈ $20–40/month, ~1 CPU core per concurrent meeting. Run **real Chrome under
 `xvfb`, not headless** — Meet misbehaves headless.
 
-**【推測】 The go/no-go risk: Google login from a datacenter IP.** Signing the
-shared Workspace account into Chrome on a VPS may hit a verification challenge,
+**【推測】 The go/no-go risk: Google login from a datacenter IP.** Signing
+`system-dev@` into Chrome on a VPS may hit a verification challenge,
 and Google is stricter with automation-shaped browsers. Untested. Mitigation:
 log in once by hand over VNC and keep the Chrome profile on disk forever, so it
 never logs in again; the account is ours, so its security policy is ours too.
@@ -321,16 +329,19 @@ would change Stage B.
 
 ### 5.1 Invite UX (decided)
 
-**Primary: a Google Calendar invite.** Add `商談AI@gastroduce-japan.co.jp` to the
-event exactly like a coworker. A cloud cron watches that account's calendar and
-joins one minute before the start. This needs no new UI at all, and:
+**Primary: a Google Calendar invite.** Add `system-dev@gastroduce-japan.co.jp`
+to the event exactly like a coworker. A cloud cron watches that account's
+calendar and joins one minute before the start. This needs no new UI at all, and:
 
 - Nobody pastes a URL — the Meet link rides along in the invite.
 - Nobody learns anything new.
 - **【推測】** An invited same-domain guest normally skips Meet's 許可 prompt, so
-  the "a human must admit the participant" manual step disappears. Verify.
-- Every invitee sees 商談AI in the guest list before the meeting — which answers
-  the participant-consent question in §7 as a side effect.
+  the "a human must admit the participant" manual step disappears. `system-dev@`
+  is same-domain, so this is now testable rather than hypothetical. Verify.
+- Every invitee sees the AI in the guest list before the meeting — which answers
+  the participant-consent question in §7 as a side effect. **Conditional on the
+  display-name chore in §6**: an invitee who reads `system-dev` in the guest list
+  has been told nothing.
 
 **Backup: Slack.** For "the meeting already started, get in here", and as where
 summaries come back. Reuses Flownote's existing Slack OAuth.
@@ -583,8 +594,9 @@ was not opened.
   run 60 min, so this will be hit before most other open items.
 - **Caption selectors are unverified against live Meet.** See §7.
 
-**Still parallel, because they depend on other people:** the VPS Google-login
-test in §5.0, and the shared Workspace account in §6.
+**Still parallel:** the VPS Google-login test in §5.0. The account half of this
+no longer depends on anyone else — `system-dev@` already exists (§6); what is
+left is signing the dedicated Chrome into it and setting its display name.
 
 ### Stage B — move to the VPS (week 2+)
 
@@ -662,32 +674,43 @@ un-removable.
   1. **Google** — to join the Meet.
   2. **Gastrobrain (Supabase/Slack OAuth)** — to load `/voice`; see
      `../gastro/web/src/lib/auth-guard.ts`. Whoever is signed in here determines
-     **which knowledge the AI can read** (per-user ACL). A future shared account
-     needs its own permissions decided; for Stage A it inherits Itsuki's.
+     **which knowledge the AI can read** (per-user ACL).
 
-  **Destination**: one shared Workspace account, `商談AI@gastroduce-japan.co.jp`,
-  for both. It makes the AI visibly not-a-person in the participant list, and on
-  the VPS it is the only login that exists at all — one profile, not one per
-  employee. Blocked on admin creating it.
+  **Decided 2026-09-21 — the Google identity is
+  `system-dev@gastroduce-japan.co.jp`.** It already exists, so this is no longer
+  blocked on admin. It replaces both the `商談AI@gastroduce-japan.co.jp` account
+  the doc was waiting for and the personal Gmail Stage A had been using. Same
+  account on the Mac today and on the VPS later — one profile there, not one per
+  employee.
 
-  **Stage A (decided 2026-08-26)**: do not wait for admin.
-  - **Google/Meet login** → `itsukison@fuji.waseda.jp`. The operator joins with
-    their Gastroduce account, so the AI needs a *different* Google identity —
-    otherwise one account joins the same meeting twice (【推測】 Meet may refuse
-    or misbehave; untested) and the participant list shows two "Son Itsuki".
-    Consequence: the AI is an **external guest**, so a human must click 許可 to
-    admit it. Acceptable for a demo.
-  - **Gastrobrain login** → `itsuki.son@gastroduce-japan.co.jp`. Not a choice:
-    `../gastro/web/src/app/login/page.tsx:15` offers `provider: "slack_oidc"`
-    only, so a non-Gastroduce address cannot sign in at all.
+  Four consequences, all improvements, plus one new chore:
+
+  | | |
+  |---|---|
+  | The 許可 step | **【推測】** gone for invited meetings: a same-domain guest is normally admitted without a human clicking 許可. Verify in the next live call (§9). |
+  | Double-join | No longer a risk in normal use. The operator joins as themselves and the AI as `system-dev@` — two identities, so neither the refusal nor the two-identical-names confusion applies. §4.1's device-switch hunk still matters for two *simultaneous* meetings on `system-dev@`. |
+  | "Internal demos only" | **Lifted.** The AI shows a company account, not somebody's personal name. |
+  | Admin dependency | **Closed.** Nothing in §6 waits on an account being created. |
+  | ⚠️ **New chore** | **Set the Google display name on `system-dev@` to 商談AI.** Meet renders the signed-in account's name and offers no name field at all (identity bug below), so the guest list reads whatever that account is called. This is the only thing between "商談AI joined" and "system-dev joined", and it is an account setting, not code. |
+
+  **The Gastrobrain login stays `itsuki.son@gastroduce-japan.co.jp` for now.**
+  This is a separate decision from the one above, and not a free switch.
+  `../gastro/web/src/app/login/page.tsx:15` offers `provider: "slack_oidc"` only,
+  so signing in as `system-dev@` needs it to be a Slack member — **unverified** —
+  and it would change what the agent may retrieve, because access comes from
+  `AccessScope(user_code, slack_user_id)`. Decide it on its own merits the day
+  somebody wants the agent to read as a service account rather than as Itsuki.
 
   ⚠️ **The two logins are independent.** The Google account has no bearing on
   what the AI can read; corpus access comes entirely from the Gastrobrain
   identity's `AccessScope(user_code, slack_user_id)`
-  (`../gastro/src/gastrobrain/auth.py:202`). Signing Meet in with an outside
-  Google account does **not** sandbox the agent.
-  ⚠️ Still **internal demos only** until the shared Workspace account exists —
-  the AI shows a personal name, not a company one.
+  (`../gastro/src/gastrobrain/auth.py:202`). Signing Meet in as `system-dev@`
+  neither widens nor sandboxes what the agent may retrieve.
+
+  ⚠️ **One-time step still outstanding on this Mac.** The dedicated Chrome
+  profile is signed into `itsukison00@gmail.com`. Sign it out and into
+  `system-dev@` before the next live meeting, or the participant list keeps
+  showing "Son Itsuki" and the 許可 step above stays mandatory.
 - **Where the participant runs**: a **Linux VPS**, not employee laptops (§5.0).
   Reached in two stages — a macOS demo first (Stage A), then the port (Stage B).
 - **How meetings are invited**: a **Google Calendar invite** to the account
@@ -721,20 +744,24 @@ un-removable.
   reimplement or federate it, which is how permission bugs happen. Spec for the
   other agent: `../gastro/docs/MEETINGS_WEB.md`.
 
-### ⚠️ Identity bug — downgraded 2026-09-07, still worth fixing
+### ⚠️ Identity bug — an account setting since 2026-09-21, not a code fix
 
-Today the participant joins as **`itsukison00@gmail.com`, displaying "Son
-Itsuki"**. When a Google account is signed in, Meet uses the account name and
-never renders a name field — so Meetron's `fillParticipantName()` silently does
-nothing (`participantNameFilled: false`) and the "GPT-Live" name never applies.
+The mechanism is unchanged and cannot be worked around from inside the page:
+when a Google account is signed in, Meet uses **that account's name** and never
+renders a name field, so Meetron's `fillParticipantName()` silently does nothing
+(`participantNameFilled: false`) and the "GPT-Live" name never applies.
 
-This was "must not ship without fixing" while the target was client 商談. With
-the internal-meetings scope (§1) it is no longer a blocker — colleagues know
-what the AI is, and a second "Son Itsuki" in the list is confusing rather than
-deceptive. Still fix it via the shared Workspace account, because §4.1's
-double-join case and the one-account-N-profiles model in §5.0 both want that
-account to exist anyway. **It becomes a blocker again the moment a client is in
-the room.**
+What changed is where the fix lives. The participant used to join as
+`itsukison00@gmail.com` displaying "Son Itsuki"; it now joins as
+`system-dev@gastroduce-japan.co.jp`, so the guest list shows whatever **that**
+account's Google profile name is. Set that name to 商談AI and the problem is
+closed for good — on the Mac and on the VPS, for every meeting, without touching
+code.
+
+Until the name is set the symptom is renamed rather than fixed: a guest list
+reading "system-dev" tells a colleague no more than "Son Itsuki" did, and §7's
+consent argument leans on that name being right. **Still a blocker the moment a
+client is in the room** (§1).
 
 ---
 
@@ -752,15 +779,18 @@ the room.**
   should be told, once, in writing, that 商談AI in the guest list means the audio
   leaves the building. The calendar-invite flow (§5.1) already covers the
   mechanics — every invitee sees it before the meeting. **Someone still needs to
-  write the one-paragraph rule.** Not blocking.
+  write the one-paragraph rule.** Not blocking. Note the wording assumes the
+  guest list actually reads 商談AI, which is the `system-dev@` display-name chore
+  in §6 — invite an account called "system-dev" and nobody has been told anything.
 - **【推測】 Google login from a datacenter IP** is the one finding that could
   change Stage B. Untested. See §5.0 — run it in week 1, ~1 hour, ~$5.
-- **One shared account in two simultaneous meetings** — partially answered by
+- **`system-dev@` in two simultaneous meetings** — partially answered by
   upstream. `fc7499b` (§4.1) shows Meet swaps 「今すぐ参加」 for a device-switch UI
   when the same account is already in a call, and ships the handling for it. So
   the failure mode is now known and has a known fix; what stays **untested** is
-  whether two *different* meetings on one account behave. Once Stage B lands this
-  is a per-session-profile question: one account, N Chrome profiles on one VPS.
+  whether two *different* meetings on `system-dev@` behave. Once Stage B lands
+  this is a per-session-profile question: one account, N Chrome profiles on one
+  VPS.
 - ~~**Install cost scales linearly.**~~ **Resolved by §5.0.** Stage B has
   employees install nothing — no driver, no admin password, no restart, no Node,
   no second Chrome, no hand-loaded extension. This risk applies to Stage A only,
@@ -817,10 +847,16 @@ npm ci
 npm test                               # 147 checks, no Xcode needed
 ```
 
-Then sign the dedicated Chrome profile into **two** accounts, once each — they
-are unrelated and both are required (§7): **Google**, which joins the Meet, and
-**Gastrobrain** via Slack OIDC, which loads `/voice` and decides what corpus the
-agent may read.
+Then sign the dedicated Chrome profile into **two** accounts, once each. They are
+unrelated and both are required (§6):
+
+- **Google** → `system-dev@gastroduce-japan.co.jp`. Joins the Meet. Its Google
+  display name is what every participant sees, so it should read 商談AI.
+- **Gastrobrain** via Slack OIDC → `itsuki.son@gastroduce-japan.co.jp`. Loads
+  `/voice` and decides what corpus the agent may read.
+
+⚠️ This Mac's profile is still on the old personal Gmail. Switch the Google half
+before the next live meeting (§6).
 
 ### Every meeting — five commands, in this order
 
@@ -871,7 +907,7 @@ contract between the page and Meetron:
 Over CDP with `scripts/playwright-cdp.mjs`, `document.documentElement.dataset`
 is the fastest way to see what the agent thinks is happening.
 
-### First real meeting — the three things only a live call can settle
+### First real meeting — the four things only a live call can settle
 
 Everything else is covered by tests; these are not, and each has a cheap check
 (§7):
@@ -884,8 +920,13 @@ Everything else is covered by tests; these are not, and each has a cheap check
    hands over.
 3. **Does audio actually route both ways?** The room hears the agent, and the
    agent's transcript shows the room's words.
+4. **Does `system-dev@` skip the 許可 prompt?** New as of 2026-09-21 (§6). Join
+   with the account invited to the event and watch whether a human has to admit
+   it. If it walks straight in, the last manual step in the calendar-invite flow
+   (§5.1) is gone.
 
 ### Manual steps that cannot be automated
 
-PKG install (admin password), the restart it wants, the two logins above, and
-admitting the participant into the call.
+PKG install (admin password), the restart it wants, and the two logins above.
+Admitting the participant may no longer be one of these — see item 4 above; it
+was mandatory only while the AI joined on an outside Google account.
