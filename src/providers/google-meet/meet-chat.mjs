@@ -90,9 +90,49 @@ export function collectorSource({ pollMs = 500, selectors = CHAT_REGION_SELECTOR
     return null;
   };
 
-  // One block is "who sent it, when, and what they wrote". Read structurally
-  // rather than by class name, which is minified. Meet groups consecutive
-  // messages from the same person, so a block can hold several lines of body.
+  // Meet tags every message with a stable unique id, and that element holds
+  // the body *alone* — no sender, no timestamp. Prefer it over any structural
+  // guess.
+  //
+  // Found in the first live meeting, 2026-09-21: the real group's innerText
+  // arrives with no newlines at all — "孫イツキ10:37 AM商談AI 起きて" — so the
+  // line-splitting walk below produced a single contaminated string with an
+  // empty sender. parseChatCommand then saw the wake word at position 12
+  // rather than 0, failed closed as designed, and the agent sat asleep while
+  // the operator watched a message it had genuinely received. The synthetic
+  // test could not have caught this: it built the newline-separated shape the
+  // walk expected.
+  const readTagged = (region) => {
+    const out = [];
+    for (const node of region.querySelectorAll("[data-message-id]")) {
+      const text = (node.innerText || "").trim();
+      if (!text) continue;
+      out.push({ id: node.getAttribute("data-message-id"), node, text });
+    }
+    return out;
+  };
+
+  // The sender sits on the enclosing group, in a leaf that belongs to no
+  // message and is not the clock. Walk outwards until one turns up.
+  const senderFor = (node, region) => {
+    let el = node.parentElement;
+    while (el && el !== region) {
+      for (const leaf of el.querySelectorAll("*")) {
+        if (leaf.children.length) continue;
+        if (leaf.closest("[data-message-id]")) continue;
+        const text = (leaf.innerText || "").trim();
+        if (!text || TIME_LINE.test(text)) continue;
+        return text;
+      }
+      el = el.parentElement;
+    }
+    return "";
+  };
+
+  // Fallback for a Meet that stops tagging messages. One block is "who sent
+  // it, when, and what they wrote", read structurally rather than by class
+  // name, which is minified. Meet groups consecutive messages from the same
+  // person, so a block can hold several lines of body.
   const readMessages = (region) => {
     const out = [];
     for (const block of region.children) {
@@ -117,6 +157,25 @@ export function collectorSource({ pollMs = 500, selectors = CHAT_REGION_SELECTOR
     const region = findRegion();
     if (!region) return;
     const now = new Date().toISOString();
+
+    const tagged = readTagged(region);
+    if (tagged.length) {
+      for (const message of tagged) {
+        // The id deduplicates exactly, so two people sending identical words —
+        // or one person repeating themselves — stay separate messages without
+        // the index hack the structural path needs.
+        if (state.seen.has(message.id)) continue;
+        state.seen.add(message.id);
+        if (!state.primed) continue;
+        state.messages.push({
+          sender: senderFor(message.node, region),
+          text: message.text,
+          at: now,
+        });
+      }
+      state.primed = true;
+      return;
+    }
 
     readMessages(region).forEach((message, index) => {
       const key = index + "\\u0000" + message.sender + "\\u0000" + message.text;

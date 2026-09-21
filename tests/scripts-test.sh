@@ -576,6 +576,11 @@ elif [ -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' ]; then
   else
     fail 'Meet chat collection'
   fi
+  if node "$repo_root/tests/meet-chat-tagged-test.mjs" >/dev/null; then
+    pass 'Meet chat collection from data-message-id (the shape Meet really serves)'
+  else
+    fail 'Meet chat collection from data-message-id'
+  fi
   if node "$repo_root/tests/meet-chat-bridge-test.mjs" >/dev/null; then
     pass 'Meet chat bridge delivers commands to the agent tab'
   else
