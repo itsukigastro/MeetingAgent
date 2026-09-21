@@ -19,15 +19,15 @@ import {
   collectorSource,
   CHAT_REGION_SELECTORS,
   CHAT_OPEN_LABEL,
-  CHAT_CLOSE_LABEL,
+  CHAT_COMPOSE_LABEL,
 } from "../src/providers/google-meet/meet-chat.mjs";
 
 // Cheap checks first: the label patterns are what `openChatPanel` clicks, and a
 // typo there fails silently in a live meeting (no chat panel, no error).
 assert.match("全員とチャット", CHAT_OPEN_LABEL);
 assert.match("Chat with everyone", CHAT_OPEN_LABEL);
-assert.match("チャットを閉じる", CHAT_CLOSE_LABEL);
-assert.match("Close chat", CHAT_CLOSE_LABEL);
+assert.match("Send a message", CHAT_COMPOSE_LABEL);
+assert.match("メッセージを送信", CHAT_COMPOSE_LABEL);
 assert.ok(CHAT_REGION_SELECTORS.length > 1, "keep a fallback selector for Meet redesigns");
 
 const browser = await chromium.launch({

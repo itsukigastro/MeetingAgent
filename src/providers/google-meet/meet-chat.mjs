@@ -43,8 +43,17 @@ export const CHAT_REGION_SELECTORS = [
 
 /** Buttons that open the chat panel, by accessible name. */
 export const CHAT_OPEN_LABEL = /チャット|全員とチャット|chat with everyone|open chat/i;
-/** Present only while the panel is already open. */
-export const CHAT_CLOSE_LABEL = /チャットを閉じる|close chat/i;
+
+/**
+ * The compose box, and the only dependable sign that the panel is open.
+ *
+ * Not a "Close chat" button: the Meet build seen live on 2026-09-21 renders no
+ * such button at all — zero matches with the panel demonstrably open — so
+ * confirming the open that way reported failure even when the click worked.
+ * The textarea is hidden from the accessibility tree while the panel is shut,
+ * so `getByRole("textbox", …)` resolves it exactly when chat is usable.
+ */
+export const CHAT_COMPOSE_LABEL = /send a message|メッセージを送信/i;
 
 /**
  * A timestamp line inside a message block. Dropped before the sender is
@@ -220,8 +229,17 @@ export async function installChatCollector(page, options = {}) {
  * report it rather than guess.
  */
 export async function openChatPanel(page, locatorIsVisible) {
-  const alreadyOpen = page.getByRole("button", { name: CHAT_CLOSE_LABEL });
-  if (await locatorIsVisible(alreadyOpen)) return { open: true, alreadyOpen: true };
+  const compose = page.getByRole("textbox", { name: CHAT_COMPOSE_LABEL });
+  if (await locatorIsVisible(compose)) return { open: true, alreadyOpen: true };
+
+  // Meet hides its control bar after a few seconds without pointer movement,
+  // and the chat button lives in it. Nudge the pointer before concluding the
+  // button is absent: this is why the bridge reported "panel unavailable" for
+  // a meeting whose chat button was present and clickable the whole time. The
+  // panel then stayed shut, Meet rendered no new messages into the stale list
+  // node, and every command typed into chat was silently never seen.
+  await page.mouse.move(8, 8).catch(() => {});
+  await page.mouse.move(360, 360).catch(() => {});
 
   const openChat = page.getByRole("button", { name: CHAT_OPEN_LABEL });
   if (!(await locatorIsVisible(openChat))) return { open: false, alreadyOpen: false };
@@ -229,7 +247,7 @@ export async function openChatPanel(page, locatorIsVisible) {
   // `force` because Meet's control bar animates and a plain click times out on
   // "stable" — the same reason the microphone and caption controls use it.
   await openChat.first().click({ force: true, timeout: 5_000 }).catch(() => {});
-  const confirmed = await alreadyOpen
+  const confirmed = await compose
     .first()
     .waitFor({ state: "visible", timeout: 5_000 })
     .then(() => true)
