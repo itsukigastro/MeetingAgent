@@ -19,6 +19,8 @@
  * and covered by its tests.
  */
 
+import { readFileSync } from "node:fs";
+
 import { connectToChromeOverCDP } from "./playwright-cdp.mjs";
 import { locatorIsVisible } from "../src/browser/meeting-browser.mjs";
 import {
@@ -29,8 +31,31 @@ import {
 
 const MEET_ORIGIN = "https://meet.google.com/";
 
+/**
+ * The CDP port is chosen per machine and written to `.meeting-copilot.env`
+ * (AGENTS.md §8); the shell scripts source that file, so a bare 9223 default
+ * here is wrong on every machine but one — `connect ECONNREFUSED 127.0.0.1:9223`
+ * while a perfectly good Chrome listens elsewhere. Resolve it the same way they
+ * do: a real environment variable wins, then the env file, then the old default.
+ */
+function defaultCdpPort() {
+  const fromEnvironment = process.env.MEETING_COPILOT_CDP_PORT;
+  if (fromEnvironment) return fromEnvironment.trim();
+  try {
+    const file = readFileSync(
+      new URL("../.meeting-copilot.env", import.meta.url),
+      "utf8",
+    );
+    const match = file.match(/^\s*MEETING_COPILOT_CDP_PORT=['"]?(\d+)['"]?\s*$/m);
+    if (match) return match[1];
+  } catch {
+    // No env file — a fresh checkout that has not run the setup script yet.
+  }
+  return "9223";
+}
+
 const options = {
-  cdp: "http://127.0.0.1:9223",
+  cdp: `http://127.0.0.1:${defaultCdpPort()}`,
   agentUrl: "",
   pollMs: 1_000,
   once: false,
