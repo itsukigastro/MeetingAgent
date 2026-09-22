@@ -543,6 +543,44 @@ else
   fail 'shared meeting browser interactions'
 fi
 
+for test_name in state-sync run-state; do
+  if node "$repo_root/tests/$test_name-test.mjs" >/dev/null; then
+    pass "meeting $test_name"
+  else
+    fail "meeting $test_name"
+  fi
+done
+
+if node "$repo_root/tests/meeting-identity-test.mjs" >/dev/null; then
+  pass 'meeting identity resumes a restart and separates a recurrence'
+else
+  fail 'meeting identity keys'
+fi
+
+if node "$repo_root/tests/segment-queue-test.mjs" >/dev/null; then
+  pass 'segment queue sequencing, retry order, and bounds'
+else
+  fail 'segment queue sequencing'
+fi
+
+if node "$repo_root/tests/end-detection-test.mjs" >/dev/null; then
+  pass 'meeting end detection survives dialogs and notices an empty call'
+else
+  fail 'meeting end detection'
+fi
+
+if node "$repo_root/tests/gastrobrain-client-test.mjs" >/dev/null; then
+  pass 'Gastrobrain meetings client contract, retries, and token redaction'
+else
+  fail 'Gastrobrain meetings client'
+fi
+
+if node "$repo_root/scripts/meeting-session.mjs" --help >/dev/null; then
+  pass 'meeting session help'
+else
+  fail 'meeting session help'
+fi
+
 if [ "${MEETING_COPILOT_SKIP_BROWSER_TEST:-0}" = "1" ]; then
   pass 'extension panel and popup UI browser test (skipped by environment)'
 elif [ -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' ]; then
@@ -581,10 +619,10 @@ elif [ -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' ]; then
   else
     fail 'Meet chat collection from data-message-id'
   fi
-  if node "$repo_root/tests/meet-chat-bridge-test.mjs" >/dev/null; then
-    pass 'Meet chat bridge delivers commands to the agent tab'
+  if node "$repo_root/tests/meeting-session-test.mjs" >/dev/null; then
+    pass 'meeting session records the meeting, ends the call, and posts the summary'
   else
-    fail 'Meet chat bridge delivery'
+    fail 'meeting session lifecycle'
   fi
   if node "$repo_root/tests/zoom-web-provider-test.mjs" >/dev/null; then
     pass 'Zoom Web status, microphone, redaction, and leave handling'

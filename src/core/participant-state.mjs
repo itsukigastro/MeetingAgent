@@ -6,6 +6,10 @@ export const CONNECTION_STATES = Object.freeze([
   "joining",
   "waiting",
   "joined",
+  // The call is over: the participant was in it and no longer is. Distinct
+  // from "prejoin", which is what a post-call screen used to report — a state
+  // that reads as "about to join" and made the end of a meeting undetectable.
+  "ended",
   "rejected",
   "manual-action-required",
 ]);

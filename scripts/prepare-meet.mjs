@@ -389,7 +389,7 @@ if (connection === "joined") {
 // a question (AGENTS.md §5.2). The panel has to be *open* or Meet renders no
 // messages into the DOM at all, so the collector would poll an empty page.
 // Best-effort for the same reason as captions: no chat is a degraded meeting,
-// not a failed one. `meet-chat-bridge.mjs` drains what this installs.
+// not a failed one. `meeting-session.mjs` drains what this installs.
 let chat = { open: false, alreadyOpen: false, collector: "not-installed" };
 if (connection === "joined") {
   try {

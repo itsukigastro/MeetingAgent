@@ -111,6 +111,17 @@ if command -v brew >/dev/null 2>&1; then
   info 'Homebrew is available but is no longer required for audio routing.'
 fi
 
+# Report only presence, never values: this file contains the service token.
+if command -v node >/dev/null 2>&1; then
+  recording_missing="$(node "$repo_root/scripts/check-meeting-env.mjs" "$repo_root")"
+  if [ -n "$recording_missing" ]; then
+    warn "Meeting recording configuration needs attention: $recording_missing"
+    info 'See .meeting-copilot.env.example and AGENTS.md §9.'
+  else
+    ok 'Meeting recording configuration is present (credentials not verified).'
+  fi
+fi
+
 printf '\nSummary\n'
 printf '%s\n' '-------'
 if [ "$required_missing" -eq 0 ]; then

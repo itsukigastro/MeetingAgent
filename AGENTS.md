@@ -420,7 +420,7 @@ Do not spend time chasing 100 % recall on 商談AI; see §6.
 Three pieces, in two repos, joined by one contract:
 
 ```
-Meet tab                      meet-chat-bridge.mjs           agent tab
+Meet tab                      meeting-session.mjs           agent tab
 ─────────                     ────────────────────           ─────────
 meet-chat.mjs collector  ──▶  drainMeetChat(meetPage)
   polls the chat panel        for each message:
@@ -437,7 +437,7 @@ meet-chat.mjs collector  ──▶  drainMeetChat(meetPage)
   and a **priming pass on install** so joining a meeting does not replay an
   hour-old 「商談AI 静かに」 as a fresh command. `drainMeetChat` samples before
   reading, so a command never waits a poll tick.
-- **`scripts/meet-chat-bridge.mjs`** — the long-running wire. Its own script
+- **`scripts/meeting-session.mjs`** — the long-running wire. Its own script
   rather than a branch of `native-host.mjs`, which Stage B deletes; this is
   plain Playwright over CDP and ports unchanged. `--once` drains a single batch,
   which is what makes it testable.
@@ -459,9 +459,11 @@ all, and the control surface silently does not exist. `prepare-meet.mjs` opens i
 on join; the bridge opens it again on start, for a meeting it is attached to
 after the fact.
 
-#### ⚠️ When the cloud poller is built: make it edge-triggered
+#### State polling — built 2026-09-21
 
-Not yet written — this is a note for whoever builds Stage B item 5.
+`meeting-session.mjs` now polls the API; `src/meeting/state-sync.mjs` owns reconciliation.
+A remote change wins its tick, and is acknowledged only once the page accepts it.
+Never push the local sample taken before applying a remote command back to the API.
 
 The web UI also sets the agent state, and the contract
 (`../gastro/docs/MEETINGS_WEB.md` §6) has the VPS **poll** `GET /v1/meetings/{id}/state`
@@ -502,12 +504,14 @@ does not block any of this.
 |---|---|---|---|
 | 1 | Two-state machine, replacing `attachWakeWordGate` | `../gastro/web/src/lib/meeting-mode.ts` | **done 2026-09-07** |
 | 2 | Meet chat reader | `src/providers/google-meet/meet-chat.mjs` | **done 2026-09-07** |
-| 3 | Wire chat commands + typed questions into the machine | `scripts/meet-chat-bridge.mjs` | **done 2026-09-07** |
+| 3 | Wire chat commands + typed questions into the machine | `scripts/meeting-session.mjs` (absorbed the 2026-09-07 bridge) | **done 2026-09-21** |
 | 4 | Cherry-pick the `fc7499b` join hunk | `scripts/prepare-meet.mjs` | **done 2026-09-07** |
-| 5 | **First real meeting** — validates 1–3, the caption selectors (§7) and the audio path in one sitting | — | **blocked on a human** |
-| 6 | VPS Google-login test (§5.0), ~1 h, ~$5 | — | not started |
+| 5 | Meeting registration, caption upload, state sync, teardown, recovery and meeting-aware voice threads | `scripts/meeting-session.mjs`, `src/meeting/`, `../gastro/web` | **implemented locally 2026-09-21; runbook §9** |
+| 6 | **First real meeting** — validates 1–3, the caption selectors (§7) and the audio path in one sitting | — | **blocked on a human** |
+| 7 | VPS Google-login test (§5.0), ~1 h, ~$5 | — | not started |
 
-Items 5 and 6 are the only ones left, and neither is code. Item 5 is what
+Items 6 and 7 require live verification; item 5 also needs the recording
+configuration and the web changes deployed (§9). Item 6 is what
 converts guesses into facts: everything still marked 【推測】 or "unverified" in
 this doc resolves there.
 
@@ -588,10 +592,11 @@ was not opened.
   two-state machine in §5.2. Regression test:
   `../gastro/web/src/lib/meeting-mode.test.ts`, "answers a follow-up that does
   not repeat the name".
-- **55-minute cap.** OpenAI hard-limits a Realtime session to 60 minutes and the
-  page closes at 55 (`MAX_SESSION_S`). A meeting longer than that loses the agent
-  at 55:00. Reconnecting mid-meeting is not built. Internal meetings routinely
-  run 60 min, so this will be hit before most other open items.
+- **55-minute rotation.** The page still closes at `MAX_SESSION_S`; the supervisor
+  reloads an ended/error agent while Meet remains live, at most once per minute.
+  After 180 s without a healthy agent it tears down. Realtime audio context does
+  not survive reload; the successfully meeting-bound thread can retrieve the
+  saved caption record. This is recovery with a brief audio gap, not seamless handoff.
 - **Caption selectors are unverified against live Meet.** See §7.
 
 **Still parallel:** the VPS Google-login test in §5.0. The account half of this
@@ -858,29 +863,89 @@ unrelated and both are required (§6):
 ⚠️ This Mac's profile is still on the old personal Gmail. Switch the Google half
 before the next live meeting (§6).
 
-### Every meeting — five commands, in this order
+### Recording setup (once)
+
+Add `GASTROBRAIN_API_URL` (FastAPI base URL, without `/v1`), `MEETING_AGENT_TOKEN`
+(the backend's shared token), and `MEETING_COPILOT_OPERATOR_EMAIL` to the ignored
+`.meeting-copilot.env`, then `chmod 600 .meeting-copilot.env`. See
+`.meeting-copilot.env.example`; preserve the installer-generated CDP port.
+Environment variables override the file. Secrets are never CLI arguments or
+passed to the browser. `check-env.sh` checks presence without printing values.
+
+The operator must match the Gastrobrain/Slack login in the agent tab (currently
+`itsuki.son@gastroduce-japan.co.jp`), **not** the Google identity used by Meet.
+It is posted as organizer so the meeting and its thread are readable. Add real
+invitees with repeatable `--attendee EMAIL`; never derive emails from display names.
+
+### Every meeting — start the supervisor after admission
 
 ```bash
-./scripts/open-control-ui-setup.sh     # dedicated Chrome, CDP on 9223
-./scripts/open-agent.sh                # agent tab: /voice?mode=meeting
+./scripts/open-control-ui-setup.sh     # reads the configured random CDP port
+./scripts/open-agent.sh
 ./scripts/open-gpt-participant.sh --auto-prepare --join "https://meet.google.com/xxx-yyyy-zzz"
-node scripts/meet-chat-bridge.mjs \
-  --agent-url "https://gastron-brain-web.vercel.app/voice?mode=meeting"
 ./scripts/set-meet-mic.sh unmute
+node scripts/meeting-session.mjs --meet-url "https://meet.google.com/xxx-yyyy-zzz"
 ```
 
-The order is load-bearing. `open-agent.sh` must come before the bridge, because
-the bridge finds the agent tab by URL and exits if it is not there; the Meet tab
-must exist before it too, for the same reason.
+The last command runs in the foreground for the entire call. It replaces the old
+chat bridge: registers the meeting, binds `/voice?mode=meeting&meeting_id=...`,
+streams captions, carries chat commands, polls web state and detects the end.
+It waits for admission before marking a meeting live. `--title TEXT` overrides the
+tab title; `--event-id ID` accepts a Calendar **occurrence** id when available.
+Ad-hoc identity defaults to Meet code + Tokyo date, resumes an unfinished run
+across midnight, and adds a fresh suffix when repeating a completed call that day.
+Keep the runtime directory: losing it loses the sequence watermark and outbox.
+Use a distinct event id if deliberately starting another call with the same link.
 
-`--auto-prepare` does more than open a tab: it binds the two Meetron loopback
-devices, turns captions on, opens the chat panel and installs **both**
-collectors (`meet-captions.mjs` and `meet-chat.mjs`). A human still has to admit
-the participant.
+Only the exact Meet URL and a single meeting-mode `/voice` tab are supervised.
+Other Meet/dashboard tabs are left alone. One supervisor is allowed per runtime
+and dedicated Chrome/audio pair. Stage B needs separate pairs/directories per call.
+Do not run the retired chat bridge alongside it.
 
-**Do not skip the bridge.** It is the only thing carrying Meet chat into
-`window.meetingControl` — without it the agent joins, hears everything and can
-never be woken, quieted or asked anything.
+**Ctrl-C / SIGTERM ends the session**, closes its tabs and restores audio; it does
+not detach. A confirmed post-call screen ends the session after 3 observations;
+missing controls have a 60 s grace. An explicit participant total of one for 120 s
+ends it; rendered tile counts are never treated as attendance totals. Unknown
+counts do not end a call. Agent tab closure/crash ends the session immediately.
+
+### Recovery and diagnostics
+
+Captions are assigned monotonic sequence numbers and saved with pending batches
+in `.meeting-copilot-runtime/meeting-session.json` (0600) before HTTP upload.
+Batches contain at most 500 lines; the queue holds 5,000 plus one in-flight batch.
+Overflow drops the oldest queued lines and logs the count. Transient API calls
+retry twice; a background worker keeps them from blocking chat and end detection.
+A minute without captions produces a warning naming `CAPTION_REGION_SELECTORS`.
+
+Teardown stops voice and drains even unsettled captions, closes only the owned
+Meet tab, restores audio, waits for any upload, then flushes captions before
+`POST /end`. Failed uploads or `/end` leave recovery state and exit nonzero;
+they do not declare the summary complete. Retry after service recovery:
+
+```bash
+node scripts/meeting-session.mjs --recover-only
+```
+
+This needs no browser and preserves the original end timestamp. Restarting the
+same unfinished call resumes its outbox and sequence watermark. Starting a new
+call first finalizes a stale recording; if that fails, the command reports the
+error and preserves it. Initial registration failure is loud and leaves the
+already-running call alone. Avoid deleting recovery state to bypass an error.
+
+`--once --meet-url URL` installs/drains collectors once and exits without API writes
+or teardown (it **does** consume caption/chat buffers and forward chat commands).
+`--no-api --meet-url URL` runs chat and automatic teardown without recording.
+Neither can run beside an active supervisor because both drain the same buffers.
+
+### Implementation status (2026-09-21)
+
+The two fixes are implemented locally in Meetron and `../gastro/web`: explicit
+live-conversation prompt precedence, meeting-linked voice threads, supervisor,
+API retry/redaction, durable caption outbox, state sync, end detection and recovery.
+The backend HTTP contract and database are unchanged. Browser tests use synthetic
+Meet/agent pages and a stub API; they do not prove today's live caption selectors,
+Google admission, audio quality, model routing or deployed summary generation.
+Deploy the web changes before relying on meeting-bound voice threads.
 
 ### Driving it during the meeting
 
@@ -903,11 +968,12 @@ contract between the page and Meetron:
 
 - `data-meeting-status` = `connecting | listening | answering | error | ended`
 - `data-meeting-agent-state` = `asleep | open`
+- `data-meeting-id` = the UUID only after a meeting-bound voice thread is created
 
 Over CDP with `scripts/playwright-cdp.mjs`, `document.documentElement.dataset`
 is the fastest way to see what the agent thinks is happening.
 
-### First real meeting — the four things only a live call can settle
+### First real meeting — checks that require a live call
 
 Everything else is covered by tests; these are not, and each has a cheap check
 (§7):
@@ -924,6 +990,12 @@ Everything else is covered by tests; these are not, and each has a cheap check
    with the account invited to the event and watch whether a human has to admit
    it. If it walks straight in, the last manual step in the calendar-invite flow
    (§5.1) is gone.
+
+5. **Is the meeting lifecycle visible?** `/meetings` shows it live, captions
+   arrive, and ending from the other side closes the AI and produces a summary.
+6. **Does room recall use this meeting?** Ask 「ここまでの話をまとめて」 after
+   discussing a unique topic. Check that it describes this room without unrelated
+   citations; repeat after an agent reload to check stored-record fallback.
 
 ### Manual steps that cannot be automated
 

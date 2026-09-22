@@ -16,6 +16,7 @@ import { chromium } from "playwright-core";
 
 import {
   collectorSource,
+  drainMeetCaptions,
   CAPTION_REGION_SELECTORS,
   CAPTION_ON_LABEL,
   CAPTION_OFF_LABEL,
@@ -122,6 +123,12 @@ try {
     ["戻りました"],
     "the collector keeps running after captions are toggled off and on",
   );
+  // Teardown must include the caption that has not aged through settleMs.
+  await setCaptions([{ speaker: "田中", text: "最後の次のアクションです" }]);
+  const final = await drainMeetCaptions(page, { final: true });
+  assert.deepEqual(final.entries.map(e => e.text), ["最後の次のアクションです"]);
+  assert.equal(final.pending, 0);
+  assert.deepEqual((await drainMeetCaptions(page, { final: true })).entries, []);
 } finally {
   await browser.close();
 }

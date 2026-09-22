@@ -159,6 +159,11 @@ export function collectorSource({ settleMs = 1_500, selectors = CAPTION_REGION_S
   // replaced wholesale when captions are toggled, which detaches an observer
   // silently. A 500ms poll cannot be detached and costs nothing next to WebRTC.
   state.timer = setInterval(sample, 500);
+  state.finish = () => {
+    clearInterval(state.timer);
+    sample();
+    flush(Infinity);
+  };
   sample();
   return "installed";
 })()`;
@@ -198,11 +203,12 @@ export async function enableCaptions(page, locatorIsVisible) {
  * Take the finished caption entries and clear them from the page, so repeated
  * calls stream the transcript rather than re-reading it.
  */
-export async function drainMeetCaptions(page) {
-  return page.evaluate(() => {
+export async function drainMeetCaptions(page, { final = false } = {}) {
+  return page.evaluate((finish) => {
     const state = globalThis.__meetronCaptions;
     if (!state) return { installed: false, entries: [], region: "" };
+    if (finish) state.finish?.();
     const entries = state.entries.splice(0, state.entries.length);
     return { installed: true, entries, region: state.region, pending: state.pending.size };
-  });
+  }, final);
 }

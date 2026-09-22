@@ -11,6 +11,19 @@ import { getPlatformAdapter } from "../../platform/platform-registry.mjs";
 
 const MEETING_PATH = /^\/([a-z]{3}-[a-z]{4}-[a-z]{3})\/?$/i;
 
+/**
+ * Meet's post-call screen — the wording it shows once the participant is out of
+ * the call, whether it hung up, was removed, or the host ended the call for
+ * everyone.
+ *
+ * Matched only after 「通話から退出」 has been ruled out, so a live call can never
+ * be read as ended: while in the call the leave button is present and wins.
+ * Without this the post-call screen fell through to "prejoin", and nothing
+ * downstream could tell "about to join" from "the meeting is over".
+ */
+export const POST_CALL_TEXT =
+  /通話から退出しました|会議から退出しました|この通話は終了しました|通話が終了しました|ミーティングは終了しました|you(?:'| ha)?ve left the (?:meeting|call)|your (?:meeting|call) has ended|the (?:meeting|call) has ended|call ended|会議から削除されました|通話から削除されました|you(?: were| have been|’ve been|\'ve been) removed from (?:the|this) (?:meeting|call)/i;
+
 export function normalizeGoogleMeetUrl(value) {
   let url;
   try {
@@ -246,8 +259,7 @@ export async function setGoogleMeetMicrophone(
   };
 }
 
-export async function getGoogleMeetStatus(browser, locatorIsVisible) {
-  const page = findGoogleMeetPage(browser);
+export async function getGoogleMeetStatus(browser, locatorIsVisible, page = findGoogleMeetPage(browser)) {
   if (!page) {
     return {
       browserConnected: true,
@@ -258,7 +270,7 @@ export async function getGoogleMeetStatus(browser, locatorIsVisible) {
     };
   }
 
-  const leave = page.getByRole("button", { name: /通話から退出|leave call/i });
+  const leave = page.locator('button[aria-label*="通話から退出"], [role="button"][aria-label*="通話から退出"], button[aria-label*="leave call" i], [role="button"][aria-label*="leave call" i]');
   const [microphone, leaveVisible, bodyText] = await Promise.all([
     getGoogleMeetMicrophoneState(page),
     locatorIsVisible(leave),
@@ -272,6 +284,8 @@ export async function getGoogleMeetStatus(browser, locatorIsVisible) {
     connection = "waiting";
   } else if (/参加できません|can't join|cannot join/i.test(bodyText)) {
     connection = "rejected";
+  } else if (POST_CALL_TEXT.test(bodyText)) {
+    connection = "ended";
   }
 
   return {
@@ -284,6 +298,33 @@ export async function getGoogleMeetStatus(browser, locatorIsVisible) {
     url: safePageUrl(page),
     title: await page.title(),
   };
+}
+
+/**
+ * How many people are in the call, or null when it cannot be told.
+ *
+ * Used for one decision only: the AI is alone, so the meeting is over. Null is
+ * a first-class answer — every selector here is Meet's obfuscated markup, and
+ * a wrong count would end a live meeting. The caller treats null as "no
+ * signal", so the worst case of a broken selector is that the AI stays until
+ * one of the other end signals fires.
+ */
+export async function countGoogleMeetParticipants(page) {
+  if (!page || page.isClosed()) return null;
+  return page
+    .evaluate(() => {
+      // Grid tiles are virtualized and may show only one of many attendees.
+      // Only trust Meet's explicit total, never the number of rendered tiles.
+      const labels = [...document.querySelectorAll('button[aria-label], [role="button"][aria-label]')]
+        .map((node) => node.getAttribute("aria-label") || "");
+      for (const label of labels) {
+        if (!/参加者|people|participants/i.test(label)) continue;
+        const digits = label.match(/\d+/)?.[0];
+        if (digits && Number(digits) > 0) return Number(digits);
+      }
+      return null;
+    })
+    .catch(() => null);
 }
 
 export async function reconcileGoogleMeetSession(
@@ -299,9 +340,8 @@ export async function reconcileGoogleMeetSession(
   };
 }
 
-export async function leaveGoogleMeet(browser, locatorIsVisible) {
-  const page = findGoogleMeetPage(browser);
-  if (!page) {
+export async function leaveGoogleMeet(browser, locatorIsVisible, page = findGoogleMeetPage(browser)) {
+  if (!page || page.isClosed()) {
     return { left: false, alreadyLeft: true, tabClosed: true };
   }
 
